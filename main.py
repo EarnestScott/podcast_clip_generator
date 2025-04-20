@@ -34,27 +34,50 @@ def transcribe_audio(file_path: str) -> dict:
     }
 
 # === Step 2: Extract Clip Candidates ===
-def find_best_clip(transcript_text: str) -> dict:
+def find_multiple_clips(transcript_text: str, max_clips: int = 3) -> list:
     """
-    Uses GPT-4o to identify the most interesting 30–90 second moment from the transcript.
-    Returns start_time, end_time, title, quote.
+    Uses GPT-4 to identify multiple highlight-worthy 30-90 second moments from the transcript.
+    Returns a list of non-overlapping clips, each with timing, title, and caption information.
+    
+    Args:
+        transcript_text (str): The full transcript text
+        max_clips (int): Maximum number of clips to find (default: 3)
+        
+    Returns:
+        list: List of dictionaries containing clip information
     """
     prompt = f"""
-    Given this podcast transcript, identify the most engaging 30-90 second clip that would work well on social media.
-    The clip should be self-contained and interesting even out of context.
+    You are a professional video editor for thought-provoking podcast clips. Your task is to identify {max_clips} 
+    high-impact moments from this transcript that would work well as standalone short-form videos.
     
-    Transcript: {transcript_text}
+    For each clip:
+    - Duration should be 30-90 seconds
+    - Must be self-contained and engaging even out of context
+    - Should contain a complete thought or story arc
+    - Must not overlap with other clips
+    - Should be emotionally resonant or intellectually stimulating
     
-    Return a valid JSON object (no markdown formatting) with these fields:
-    - start_time (in seconds)
-    - end_time (in seconds)
-    - title (catchy title for the clip)
-    - caption (engaging social media caption)
+    Return a JSON array of {max_clips} clips, where each clip has:
+    - start_time: float (in seconds)
+    - end_time: float (in seconds)
+    - title: str (engaging title for the clip)
+    - clip_text: str (the exact transcript text for this clip)
+    - tiktok_caption: str (engaging caption for social media)
+    
+    Ensure the clips are:
+    - Non-overlapping (no time overlap between clips)
+    - High-impact (each could stand alone as a viral clip)
+    - Varied in content (if possible, cover different topics/angles)
+    
+    Transcript:
+    {transcript_text}
+    
+    Return ONLY the JSON array, nothing else.
     """
     
     client = openai.OpenAI()
     response = client.chat.completions.create(
-        model="gpt-4.1-nano-2025-04-14",  # Using the correct GPT-4o model identifier
+        model="gpt-4-turbo-preview",
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -78,11 +101,21 @@ def cut_clip(input_file: str, start_time: float, end_time: float, output_file: s
         video = stream.video.trim(start=start_time, end=end_time).setpts('PTS-STARTPTS')
         audio = stream.audio.filter_('atrim', start=start_time, end=end_time).filter_('asetpts', 'PTS-STARTPTS')
         
-        # Combine video and audio streams
-        stream = ffmpeg.output(video, audio, output_file)
+        # Combine video and audio streams with explicit codec settings
+        stream = ffmpeg.output(
+            video, 
+            audio, 
+            output_file,
+            vcodec='libx264',
+            acodec='aac',
+            preset='medium',
+            crf=23,
+            movflags='+faststart'
+        )
         
-        # Run ffmpeg
-        ffmpeg.run(stream, overwrite_output=True)
+        # Run ffmpeg with overwrite
+        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        
     except ffmpeg.Error as e:
         error_message = e.stderr.decode() if e.stderr else str(e)
         print('An error occurred:', error_message)
@@ -152,31 +185,58 @@ def add_subtitles_to_clip(video_path: str, subtitles: list, output_path: str):
     """
     Overlay a viral-style headline onto the video using MoviePy.
     """
-    video = VideoFileClip(video_path)
-    
-    # Generate headline from the first subtitle's text
-    headline_text = generate_headline_text(subtitles[0]['text'])
-    
-    # Create headline text clip
-    headline = TextClip(
-        text=headline_text,
-        font='Arial',
-        font_size=50,
-        color='white',
-        stroke_color='black',
-        stroke_width=4,
-        size=video.size,
-        method='caption',
-        duration=video.duration
-    ).with_position(('center', 'top'))
-    
-    # Combine video with headline
-    final = CompositeVideoClip([video, headline])
-    final.write_videofile(output_path)
-    
-    # Clean up
-    video.close()
-    final.close()
+    try:
+        # Load video with explicit duration handling
+        video = VideoFileClip(video_path)
+        
+        # Ensure we have a valid duration
+        if video.duration is None:
+            raise ValueError(f"Could not determine video duration for {video_path}")
+            
+        # Generate headline from the first subtitle's text
+        headline_text = generate_headline_text(subtitles[0]['text'])
+        
+        # Create headline text clip with explicit duration
+        headline = TextClip(
+            text=headline_text,
+            font='Arial',
+            font_size=50,
+            color='white',
+            stroke_color='black',
+            stroke_width=4,
+            size=video.size,
+            method='caption',
+            duration=video.duration
+        ).with_position(('center', 'top'))
+        
+        # Combine video with headline
+        final = CompositeVideoClip([video, headline])
+        
+        # Write with explicit codec and bitrate settings
+        final.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            preset='medium',
+            bitrate='5000k',
+            audio_bitrate='192k',
+            temp_audiofile='temp-audio.m4a',
+            remove_temp=True,
+            threads=4,
+            logger=None
+        )
+        
+    except Exception as e:
+        print(f"Error processing video: {str(e)}")
+        raise
+    finally:
+        # Ensure cleanup happens even if there's an error
+        if 'video' in locals():
+            video.close()
+        if 'final' in locals():
+            final.close()
+        if 'headline' in locals():
+            headline.close()
 
 # === Entry Point ===
 def main():
@@ -185,25 +245,26 @@ def main():
     transcript_text = transcript_result["text"]
     segments = transcript_result["segments"]  # [{'start':..., 'end':..., 'text':...}]
 
-    # Step 2: Ask GPT-4 for clip
-    clip_info = find_best_clip(transcript_text)
-    print("Selected Clip Info:", clip_info)
+    # Step 2: Ask GPT-4 for clips
+    clip_infos = find_multiple_clips(transcript_text)
+    print("Selected Clip Infos:", clip_infos)
 
-    start = clip_info["start_time"]
-    end = clip_info["end_time"]
-    output_clip_path = "output/output_clip.mp4"
+    for clip_info in clip_infos:
+        start = clip_info["start_time"]
+        end = clip_info["end_time"]
+        output_clip_path = f"output/output_clip_{clip_info['title'].replace(' ', '_')}.mp4"
 
-    # Step 3: Cut the video
-    cut_clip(INPUT_FILE, start, end, output_clip_path)
+        # Step 3: Cut the video
+        cut_clip(INPUT_FILE, start, end, output_clip_path)
 
-    # Step 4: Generate subtitles
-    subtitles = generate_subtitles(segments, start, end)
+        # Step 4: Generate subtitles
+        subtitles = generate_subtitles(segments, start, end)
 
-    # Step 5: Add subtitles to video
-    final_output = "output/final_clip_with_subs.mp4"
-    add_subtitles_to_clip(output_clip_path, subtitles, final_output)
+        # Step 5: Add subtitles to video
+        final_output = f"output/final_clip_with_subs_{clip_info['title'].replace(' ', '_')}.mp4"
+        add_subtitles_to_clip(output_clip_path, subtitles, final_output)
 
-    print(f"✅ Final clip created: {final_output}")
+        print(f"✅ Final clip created: {final_output}")
 
 if __name__ == "__main__":
     main()
