@@ -105,35 +105,73 @@ def generate_subtitles(segments: list, start_time: float, end_time: float) -> li
     return clip_segments
 
 # === Step 5: Burn Captions Into Clip ===
+def generate_headline_text(clip_text: str) -> str:
+    """
+    Generates a punchy, emotionally engaging headline for a social media clip.
+    The headline is designed to stop scroll and drive engagement.
+    
+    Args:
+        clip_text (str): The transcript text of the clip
+        
+    Returns:
+        str: A punchy headline under 80 characters
+    """
+    prompt = f"""
+You're a professional video editor for thought-provoking podcast clips on TikTok and Instagram.
+
+Write a headline to overlay at the top of this video clip that:
+- Is under 80 characters
+- Feels authentic, intelligent, and emotionally resonant
+- Sparks curiosity or tension without sounding clickbaity
+- Would make a smart, curious viewer stop scrolling
+- Avoids slang, emojis, or excessive hype
+- Is relevant and specific to the clip content
+- Sounds like something from Lex Fridman, Chris Williamson, or Tim Ferriss
+
+Here are a few examples of the tone and structure:
+- "Why most people never escape burnout"
+- "The surprising truth about ultra-processed food"
+- "A better way to build self-discipline"
+- "This advice changed how I approach money forever"
+
+Clip content:
+{clip_text}
+
+Return ONLY the headline text. Nothing else.
+    """
+    
+    client = openai.OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4-turbo-preview",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    return response.choices[0].message.content.strip()
+
 def add_subtitles_to_clip(video_path: str, subtitles: list, output_path: str):
     """
-    Overlay text subtitles onto the video using MoviePy.
+    Overlay a viral-style headline onto the video using MoviePy.
     """
     video = VideoFileClip(video_path)
     
-    # Create text clips for each subtitle
-    text_clips = []
-    for sub in subtitles:
-        # Calculate duration for this subtitle
-        duration = sub['end'] - sub['start']
-        
-        # Create text clip with proper parameters
-        text_clip = TextClip(
-            text=sub['text'],
-            font='Arial',
-            font_size=40,
-            color='white',
-            stroke_color='black',
-            stroke_width=2,
-            size=video.size,
-            method='caption',
-            duration=duration
-        ).with_start(sub['start']).with_position(('center', 'bottom'))
-        
-        text_clips.append(text_clip)
+    # Generate headline from the first subtitle's text
+    headline_text = generate_headline_text(subtitles[0]['text'])
     
-    # Combine video with subtitles
-    final = CompositeVideoClip([video] + text_clips)
+    # Create headline text clip
+    headline = TextClip(
+        text=headline_text,
+        font='Arial',
+        font_size=50,
+        color='white',
+        stroke_color='black',
+        stroke_width=4,
+        size=video.size,
+        method='caption',
+        duration=video.duration
+    ).with_position(('center', 'top'))
+    
+    # Combine video with headline
+    final = CompositeVideoClip([video, headline])
     final.write_videofile(output_path)
     
     # Clean up
