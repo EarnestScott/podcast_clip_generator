@@ -4,6 +4,8 @@ AI Podcast Clip Generator + Captioner MVP
 
 # === Imports ===
 import os
+import json
+import shutil
 from pathlib import Path
 import whisper
 import openai
@@ -77,7 +79,7 @@ def find_multiple_clips(transcript_text: str, max_clips: int = 3) -> list:
     
     client = openai.OpenAI()
     response = client.chat.completions.create(
-        model="gpt-4-turbo-preview",
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -86,6 +88,52 @@ def find_multiple_clips(transcript_text: str, max_clips: int = 3) -> list:
     content = content.replace('```json', '').replace('```', '').strip()
     
     return eval(content)  # Parse the JSON response
+
+# === Step 2b: Find Clip for User-Described Topic ===
+def find_clip_for_topic(transcript_text: str, topic_description: str) -> dict:
+    """
+    Uses GPT-4o to locate the best-matching discussion window for a user-described topic.
+    Returns a dict with start_time, end_time, title, clip_text, and confidence.
+    confidence is one of: "high", "low", "not_found".
+
+    NOTE (Option A): Sends the full transcript to GPT-4o in a single call.
+    Option B alternative: embed the topic description and Whisper segments via
+    OpenAI embeddings, find the closest segment by cosine similarity, then expand
+    the window outward. Switch to Option B if transcripts regularly exceed GPT-4o's
+    context window or per-topic API cost becomes a concern.
+    """
+    prompt = f"""
+You are a professional video editor. A user wants to find a specific discussion in a podcast transcript.
+
+User's topic description: "{topic_description}"
+
+Find the best-matching discussion window in the transcript below. Return the full arc of the
+conversation on this topic — not just the first mention. Expand the window so the clip is
+self-contained and makes sense out of context.
+
+Return a JSON object with:
+- start_time: float (in seconds)
+- end_time: float (in seconds)
+- title: str (descriptive title for this clip)
+- clip_text: str (the transcript text for this segment)
+- confidence: str — one of: "high" (clear match), "low" (uncertain), "not_found" (no match)
+
+If no discussion matches the topic, return confidence "not_found" with start_time and end_time as 0.
+
+Transcript:
+{transcript_text}
+
+Return ONLY the JSON object, nothing else.
+"""
+    client = openai.OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    content = response.choices[0].message.content
+    content = content.replace('```json', '').replace('```', '').strip()
+    return json.loads(content)
 
 # === Step 3: Clip the Video ===
 def cut_clip(input_file: str, start_time: float, end_time: float, output_file: str):
@@ -175,7 +223,7 @@ Return ONLY the headline text. Nothing else.
     
     client = openai.OpenAI()
     response = client.chat.completions.create(
-        model="gpt-4-turbo-preview",
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}]
     )
     
