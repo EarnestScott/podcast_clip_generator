@@ -288,31 +288,76 @@ def add_subtitles_to_clip(video_path: str, subtitles: list, output_path: str):
 
 # === Entry Point ===
 def main():
-    # Step 1: Transcribe
+    mode = input("Mode: (1) Auto-select highlights  (2) Find specific topics\n> ").strip()
+
+    # Transcribe once — reused by both modes
     transcript_result = transcribe_audio(INPUT_FILE)
     transcript_text = transcript_result["text"]
-    segments = transcript_result["segments"]  # [{'start':..., 'end':..., 'text':...}]
+    segments = transcript_result["segments"]
 
-    # Step 2: Ask GPT-4 for clips
-    clip_infos = find_multiple_clips(transcript_text)
-    print("Selected Clip Infos:", clip_infos)
+    if mode == "1":
+        # --- Auto mode (unchanged behavior) ---
+        clip_infos = find_multiple_clips(transcript_text)
+        print("Selected Clip Infos:", clip_infos)
 
-    for clip_info in clip_infos:
-        start = clip_info["start_time"]
-        end = clip_info["end_time"]
-        output_clip_path = f"output/output_clip_{clip_info['title'].replace(' ', '_')}.mp4"
+        for clip_info in clip_infos:
+            start = clip_info["start_time"]
+            end = clip_info["end_time"]
+            output_clip_path = f"output/output_clip_{clip_info['title'].replace(' ', '_')}.mp4"
 
-        # Step 3: Cut the video
-        cut_clip(INPUT_FILE, start, end, output_clip_path)
+            cut_clip(INPUT_FILE, start, end, output_clip_path)
+            subtitles = generate_subtitles(segments, start, end)
 
-        # Step 4: Generate subtitles
-        subtitles = generate_subtitles(segments, start, end)
+            final_output = f"output/final_clip_with_subs_{clip_info['title'].replace(' ', '_')}.mp4"
+            add_subtitles_to_clip(output_clip_path, subtitles, final_output)
 
-        # Step 5: Add subtitles to video
-        final_output = f"output/final_clip_with_subs_{clip_info['title'].replace(' ', '_')}.mp4"
-        add_subtitles_to_clip(output_clip_path, subtitles, final_output)
+            print(f"✅ Final clip created: {final_output}")
 
-        print(f"✅ Final clip created: {final_output}")
+    elif mode == "2":
+        # --- Topic mode ---
+        print("Enter topic descriptions one at a time. Press Enter with no text to finish.")
+        topics = []
+        while True:
+            topic = input("Topic > ").strip()
+            if not topic:
+                break
+            topics.append(topic)
+
+        if not topics:
+            print("No topics entered. Exiting.")
+            return
+
+        for topic in topics:
+            print(f"\nSearching for: '{topic}'...")
+            result = find_clip_for_topic(transcript_text, topic)
+
+            if result["confidence"] in ("low", "not_found"):
+                print(f"⚠️  Could not find a confident match for: '{topic}' — skipping.")
+                continue
+
+            title = result["title"]
+            start = result["start_time"]
+            end = result["end_time"]
+            safe_title = title.replace(' ', '_')
+
+            output_clip_path = f"output/output_clip_{safe_title}.mp4"
+            cut_clip(INPUT_FILE, start, end, output_clip_path)
+
+            subtitles = generate_subtitles(segments, start, end)
+
+            add_headline = input(f"Add headline overlay to '{title}'? (y/n) ").strip().lower()
+            final_output = f"output/final_clip_with_subs_{safe_title}.mp4"
+
+            if add_headline == "y":
+                add_subtitles_to_clip(output_clip_path, subtitles, final_output)
+            else:
+                # No headline requested — copy the raw cut as the final output
+                shutil.copy(output_clip_path, final_output)
+
+            print(f"✅ Final clip created: {final_output}")
+
+    else:
+        print("Invalid mode. Please enter 1 or 2.")
 
 if __name__ == "__main__":
     main()
